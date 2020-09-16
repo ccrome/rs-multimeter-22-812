@@ -112,6 +112,7 @@ The meter has a 9 pin female D connector for the serial port connection.
 '''
 import serial
 from time import sleep
+import argparse
 
 ignore_RS232_modifier = True
 
@@ -171,14 +172,36 @@ class RS22812(object):
     def interpret_digit(self, byte):
         '''This routine interprets the coded seven segment display digit.
         '''
-        code = { 215 : "0", 80 : "1", 181 : "2", 241 : "3", 114 : "4", 
-            227 : "5", 231 : "6", 81 : "7", 247 : "8", 243 : "9", 39 : "F", 
-            55 : "P", 167 : "E", 135 : "C", 134 : "L", 118 : "H", 6 : "I",
-            102 : "h", 36 : "r", 166 : "t", 100 : "n", 32 : "-", 0 : " "}
+        code = {
+            215 : "0",
+            80  : "1",
+            181 : "2",
+            241 : "3",
+            114 : "4",
+            227 : "5",
+            231 : "6",
+            81  : "7",
+            247 : "8",
+            243 : "9",
+            39  : "F",
+            55  : "P",
+            167 : "E",
+            135 : "C",
+            134 : "L",
+            118 : "H",
+            6   : "I",
+            102 : "h",
+            36  : "r",
+            166 : "t",
+            100 : "n",
+            32  : "-",
+            0   : " "
+        }
         if byte in code:
             return code[byte]
         else:
-            return "?"
+            print(f"got unknown byte: 0d{byte} 0x{byte:x}")
+            return None
 
     def GetModifiers(self, bytes):
         '''Various modes show additional annunciators, such as "MAX", 
@@ -225,28 +248,56 @@ class RS22812(object):
         return ""
 
     def InterpretReading(self, string):
-        '''We return a tuple of strings:  
-            (
-                Numerical reading with units
-                Mode
-                Modifiers
-            )
+        '''We return a dict:
+            {
+                "value"     : Numerical reading,
+                "units"     : units,
+                "mode"      : Mode,
+                "modifiers" : Modifiers,
+            }
         '''
         if string == None:
             return None
         bytes = [i for i in string]
         # Byte 0:  mode
-        modes = ("DC V", "AC V", "DC uA", "DC mA", "DC A", "AC uA", 
-            "AC mA", "AC A", "ohm", "CAP", "Hz", "NET Hz", "AMP Hz",
-            "Duty", "Net Duty", "Amp Duty", "Width", "Net Width", "Amp"
-            "Width", "Diode", "Cont", "hFE", "Logic", "dBm", "EF", "Temp")
+        modes = (
+            "DC V",
+            "AC V",
+            "DC uA",
+            "DC mA",
+            "DC A",
+            "AC uA",
+            "AC mA",
+            "AC A",
+            "ohm",
+            "CAP",
+            "Hz",
+            "NET Hz",
+            "AMP Hz",
+            "Duty",
+            "Net Duty",
+            "Amp Duty",
+            "Width",
+            "Net Width",
+            "Amp"
+            "Width",
+            "Diode",
+            "Cont",
+            "hFE",
+            "Logic",
+            "dBm",
+            "EF",
+            "Temp"
+        )
         mode = modes[bytes[0]]
         digits = [0, 0, 0, 0]
-        n = 4
         for di, by in zip((3, 4, 5, 6), (3, 2, 1, 0)):
             # Mask out the decimal point
             byte = bytes[di] & (~8)
-            digits[by] = self.interpret_digit(byte)
+            b = self.interpret_digit(byte)
+            if b is None:
+                return None
+            digits[by] = b
         # Get decimal point.  If dp = 1, 2, or 3, this locates the decimal
         # point after the first, second, or third digit, respectively.  If
         # dp = 0, there is no decimal point.
@@ -259,11 +310,13 @@ class RS22812(object):
             dp = 1
         # Get sign
         sign = ""
-        if bytes[7] & (1 << 3):  sign = "-"
+        if bytes[7] & (1 << 3):
+            sign = "-"
         # Get units
         units = self.GetUnits(bytes)
         # Construct number
-        if dp: digits.insert(dp, ".")
+        if dp:
+            digits.insert(dp, ".")
         number = (''.join(digits)).strip() 
         # Strip leading zeros
         while number and number[0] == "0":
@@ -274,8 +327,20 @@ class RS22812(object):
             number = "0" + number
         if number == "0.0F": number = ".0F"  # Diode open case
         # Make the reading
-        reading = sign + number + " " + units
-        return reading, mode, self.GetModifiers(bytes)
+        try:
+            results = {
+                "value": float(sign+number),
+                "units": units,
+                "mode" : mode,
+                "modifiers" : self.GetModifiers(bytes),
+            }
+            # reading = sign + number + " " + units
+            # return reading, mode, self.GetModifiers(bytes)
+        except ValueError:
+            # print(f"ValueError: sign={sign}, number={number}, units={units}, mode={mode}, modifiers = {self.GetModifiers(bytes)}")
+            # print(f"string = {string}")
+            results = None
+        return results
 
     def DumpPacket(self, packet):
         s = ""
@@ -291,50 +356,64 @@ class RS22812(object):
             print (self.DumpPacket(packet))
         return self.InterpretReading(packet)
 
-if __name__ == "__main__":
-    # Immediately start taking readings and printing to stdout.  There
-    # are two optional parameters on the command line.  Use the -h or --help
-    # flags for more information.
-    from time import strftime, sleep
-    from optparse import OptionParser
-    def TimeNow():
-        return strftime("%d%b%Y-%H:%M:%S")
 
-    #process command-line arguments
-    parser = OptionParser(
-        usage = "%prog [options]",
-        description = "rs22812 - A python interface for the " +
-                      "Radio Shack 22-812 digital multimeter."
-    )
-    parser.add_option("-p", "--port",
-        dest = "port",
-        help = "port device string: examples:  " +
-               "Unix-like: /dev/ttyS0, " +
-               "Windows: COM1 [defaults to one of these values]"
-    )
-    parser.add_option("-i", "--interval",
-        dest = "interval",
-        type = "int",
-        default = 1,
-        help = "interval in seconds between readings [default: %default]"
-    )
-    (options, args) = parser.parse_args()
-    port = options.port
-    interval = options.interval
-    if (port == None):
+if __name__ == "__main__":
+    from time import strftime, time
+    import sys
+    import json
+
+    def get_args():
+        p = argparse.ArgumentParser()
+        p.add_argument("-p", "--port", help="tty port.  Defualt is /dev/ttyUSB0", default="ttyUSB0")
+        p.add_argument("-l", "--logfile", help="Name of file to log data to.  Default is to print to screen", default=None)
+        p.add_argument("-v", "--interval", help="Interval, in seconds to read the data.  Looks like minimum is about 0.5 seconds. Default=1.0 sec", type=float, default=1.0)
+        args = p.parse_args()
+        return args
+
+    def sleep_until(t):
+        t = float(t)
+        now = (float(time()))
+        delta = t-now
+        if delta <= 0:
+            return
+        sleep(delta)
+
+    args = get_args()
+
+    def TimeNow():
+        return strftime("%Y-%m-%d-%H:%M:%S")
+
+    port = args.port
+    interval = args.interval
+    if port is None:
         # attempt to supply something intelligent for os for a default
         import os
         if os.name == 'nt':
             port = 'COM1'
         else:
             port = '/dev/ttyUSB0'
-        print ("rs22812 main:  no port option specified:  port set to", port)
-        
+        print("rs22812 main:  no port option specified:  port set to", port)
+
     rs = RS22812(port)
 
     count = 0
+    last = time()
+    if args.logfile:
+        logfile = open(args.logfile, "w")
+    else:
+        logfile = None
+
     while True:
         count += 1
         r = rs.GetReading()
-        print (TimeNow() + " [%d]" % count, r)
-        sleep(interval)
+        last += args.interval
+        if r is None:
+            sleep_until(last)
+            continue
+        r["time"] = TimeNow()
+        r["count"] = count
+        for lf in [logfile, sys.stdout]:
+            if lf is not None:
+                lf.write(json.dumps(r) + "\n")
+                lf.flush()
+        sleep_until(last)
